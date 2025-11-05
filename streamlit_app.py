@@ -131,6 +131,75 @@ def calculate_distance(coord1, coord2):
     except Exception as e:
         return float('inf')
 
+def find_nearest_ambulances(user_lat, user_lon, ambulances_list, max_count=5, status_filter='available'):
+    """
+    Find nearest ambulances to user location from database
+    
+    Args:
+        user_lat: User's latitude
+        user_lon: User's longitude
+        ambulances_list: List of ambulances from database
+        max_count: Maximum number of ambulances to return (default: 5)
+        status_filter: Filter by status ('available', 'all', or None)
+    
+    Returns:
+        List of nearest ambulances with distance, ETA, and route info
+    """
+    nearest_ambulances = []
+    
+    for amb in ambulances_list:
+        # Get ambulance coordinates
+        amb_lat = amb.get('lat', amb.get('latitude'))
+        amb_lon = amb.get('lon', amb.get('longitude', amb.get('long')))
+        
+        if not amb_lat or not amb_lon:
+            continue
+        
+        # Check status filter
+        amb_status = amb.get('status', '').lower()
+        if status_filter and status_filter != 'all':
+            if amb_status != status_filter.lower():
+                continue
+        
+        try:
+            # Calculate straight-line distance
+            distance = calculate_distance((float(amb_lat), float(amb_lon)), (user_lat, user_lon))
+            
+            # Get actual route using OSRM
+            route_info = get_route_osrm((float(amb_lat), float(amb_lon)), (user_lat, user_lon))
+            
+            ambulance_data = {
+                'id': amb.get('id'),
+                'name': amb.get('Name', f'Ambulance {amb.get("id")}'),
+                'status': amb.get('status', 'Unknown'),
+                'driver': amb.get('driver', 'N/A'),
+                'lat': float(amb_lat),
+                'lon': float(amb_lon),
+                'straight_distance': distance,
+            }
+            
+            if route_info:
+                ambulance_data['route_distance'] = route_info['distance']
+                ambulance_data['eta_minutes'] = route_info['duration']
+                ambulance_data['route_coordinates'] = route_info['coordinates']
+            else:
+                # Fallback to straight-line estimates
+                ambulance_data['route_distance'] = distance
+                ambulance_data['eta_minutes'] = distance * 3  # Rough estimate: 3 min per km
+                ambulance_data['route_coordinates'] = None
+            
+            nearest_ambulances.append(ambulance_data)
+            
+        except Exception as e:
+            st.warning(f"Error processing ambulance {amb.get('Name', 'Unknown')}: {str(e)}")
+            continue
+    
+    # Sort by route distance (or straight distance if route not available)
+    nearest_ambulances.sort(key=lambda x: x.get('route_distance', x.get('straight_distance', float('inf'))))
+    
+    # Return top N ambulances
+    return nearest_ambulances[:max_count]
+
 def get_route_osrm(start_coords, end_coords):
     """Get route from OSRM (Open Source Routing Machine)"""
     try:
@@ -452,83 +521,91 @@ elif page == "🚨 Emergency Request":
                         if not ambulances:
                             ambulances = fetch_baserow_data(BASEROW_CONFIG['AMBULANCES_TABLE'])
                         
-                        # Find nearest available ambulances
-                        available_ambulances = []
-                        for amb in ambulances:
-                            if amb.get('status', '').lower() == 'available':
-                                amb_lat = amb.get('lat', amb.get('latitude'))
-                                amb_lon = amb.get('lon', amb.get('longitude', amb.get('long')))
-                                
-                                if amb_lat and amb_lon:
-                                    distance = calculate_distance((float(amb_lat), float(amb_lon)), (lat, lon))
-                                    amb['distance_to_emergency'] = distance
-                                    available_ambulances.append(amb)
+                        # Use the new function to find nearest ambulances
+                        with st.spinner("🚑 Comparing your location with all ambulances in database..."):
+                            nearest_ambulances = find_nearest_ambulances(
+                                lat, lon, 
+                                ambulances, 
+                                max_count=3,  # Show top 3 nearest
+                                status_filter='available'  # Only available ambulances
+                            )
                         
-                        # Sort by distance
-                        available_ambulances.sort(key=lambda x: x.get('distance_to_emergency', float('inf')))
-                        
-                        if available_ambulances:
-                            # Get top 2 nearest ambulances
-                            nearest_ambulances = available_ambulances[:2]
+                        if nearest_ambulances:
+                            st.success(f"✅ Found {len(nearest_ambulances)} nearest available ambulance(s)!")
                             
-                            st.success(f"✅ Found {len(nearest_ambulances)} nearest ambulance(s)!")
+                            # Display ambulance comparison
+                            st.write("### 🚑 Nearest Ambulances Comparison")
                             
                             # Display ambulance details
                             for idx, amb in enumerate(nearest_ambulances, 1):
-                                amb_name = amb.get('Name', f'Ambulance {amb.get("id")}')
-                                distance = amb.get('distance_to_emergency', 0)
-                                eta = int(distance * 3)  # Rough estimate: 3 min per km
+                                amb_name = amb.get('name')
+                                distance = amb.get('route_distance', amb.get('straight_distance', 0))
+                                eta = int(amb.get('eta_minutes', 0))
+                                driver = amb.get('driver', 'N/A')
                                 
-                                st.info(f"""
-                                **Ambulance {idx}: {amb_name}**
-                                - 📍 Distance: {distance:.2f} km
-                                - ⏱️ ETA: {eta} minutes
-                                - 🚑 Status: Available
-                                """)
+                                with st.expander(f"🚑 **Ambulance {idx}: {amb_name}** - {distance:.2f} km away", expanded=(idx==1)):
+                                    col1, col2, col3 = st.columns(3)
+                                    with col1:
+                                        st.metric("📍 Distance", f"{distance:.2f} km")
+                                    with col2:
+                                        st.metric("⏱️ ETA", f"{eta} min")
+                                    with col3:
+                                        st.metric("👨‍⚕️ Driver", driver)
+                                    
+                                    st.info(f"**Status:** {amb.get('status')} | **Coordinates:** {amb.get('lat'):.4f}, {amb.get('lon'):.4f}")
+                                    
+                                    if idx == 1:
+                                        st.success("🏆 **NEAREST AMBULANCE - Recommended for dispatch**")
                             
                             # Create map with routes
-                            st.write("### 🗺️ Route Map")
+                            st.write("### 🗺️ Route Map - Your Location vs Ambulances")
                             m = folium.Map(location=[lat, lon], zoom_start=13, tiles='OpenStreetMap')
                             
                             # Add emergency location marker
                             folium.Marker(
                                 location=[lat, lon],
-                                popup=f"<b>Emergency Location</b><br>{full_address}",
+                                popup=f"<b>🚨 Emergency Location</b><br>{full_address}",
                                 icon=folium.Icon(color='red', icon='exclamation', prefix='fa'),
                                 tooltip="Emergency Location"
                             ).add_to(m)
                             
                             # Add ambulances and routes
-                            colors = ['blue', 'green', 'purple', 'orange']
+                            colors = ['blue', 'green', 'purple', 'orange', 'darkblue']
                             for idx, amb in enumerate(nearest_ambulances):
-                                amb_lat = float(amb.get('lat', amb.get('latitude')))
-                                amb_lon = float(amb.get('lon', amb.get('longitude', amb.get('long'))))
-                                amb_name = amb.get('Name', f'Ambulance {amb.get("id")}')
+                                amb_name = amb.get('name')
+                                amb_lat = amb.get('lat')
+                                amb_lon = amb.get('lon')
+                                distance = amb.get('route_distance', amb.get('straight_distance', 0))
                                 
                                 # Add ambulance marker
                                 folium.Marker(
                                     location=[amb_lat, amb_lon],
-                                    popup=f"<b>{amb_name}</b><br>Distance: {amb['distance_to_emergency']:.2f} km",
+                                    popup=f"<b>{amb_name}</b><br>Distance: {distance:.2f} km<br>ETA: {int(amb.get('eta_minutes', 0))} min",
                                     icon=folium.Icon(color=colors[idx % len(colors)], icon='plus', prefix='fa'),
-                                    tooltip=f"{amb_name} - {amb['distance_to_emergency']:.2f} km"
+                                    tooltip=f"{amb_name} - {distance:.2f} km"
                                 ).add_to(m)
                                 
-                                # Get and draw route
-                                route_data = get_route_osrm((amb_lat, amb_lon), (lat, lon))
-                                if route_data:
+                                # Draw route if available
+                                if amb.get('route_coordinates'):
                                     # Convert coordinates from [lon, lat] to [lat, lon] for folium
-                                    route_coords = [[coord[1], coord[0]] for coord in route_data['coordinates']]
+                                    route_coords = [[coord[1], coord[0]] for coord in amb['route_coordinates']]
                                     
                                     folium.PolyLine(
                                         locations=route_coords,
                                         color=colors[idx % len(colors)],
                                         weight=4,
                                         opacity=0.7,
-                                        popup=f"{amb_name}<br>Distance: {route_data['distance']:.2f} km<br>Duration: {route_data['duration']:.1f} min"
+                                        popup=f"{amb_name}<br>Distance: {distance:.2f} km<br>ETA: {int(amb.get('eta_minutes', 0))} min"
                                     ).add_to(m)
                             
                             # Display map
                             st_folium(m, width=700, height=400)
+                            
+                            # Auto-select the nearest ambulance for dispatch
+                            nearest_amb = nearest_ambulances[0]
+                            st.write("---")
+                            st.write("### 🚨 Dispatch Confirmation")
+                            st.success(f"**Auto-selected:** {nearest_amb.get('name')} (Nearest ambulance - {nearest_amb.get('route_distance', 0):.2f} km away)")
                             
                             # Create emergency request in Baserow
                             emergency_data = {
@@ -542,15 +619,16 @@ elif page == "🚨 Emergency Request":
                                 "long of T": lon,
                                 "timestamp": datetime.now().isoformat(),
                                 "status": "Pending",
-                                "assigned_ambulance": nearest_ambulances[0].get('Name', '')
+                                "assigned_ambulance": nearest_amb.get('name', '')
                             }
                             
                             result = create_baserow_row(BASEROW_CONFIG['EMERGENCIES_TABLE'], emergency_data)
                             
                             if result:
                                 st.success(f"✅ Emergency request #{result.get('id')} created successfully!")
-                                st.success(f"🚑 Dispatching: {nearest_ambulances[0].get('Name', 'Ambulance')}")
+                                st.success(f"🚑 Dispatching: **{nearest_amb.get('name')}** (ETA: {int(nearest_amb.get('eta_minutes', 0))} minutes)")
                                 st.info("📞 Emergency hotline: 108")
+                                st.info(f"👨‍⚕️ Driver: {nearest_amb.get('driver', 'N/A')}")
                                 
                                 # Refresh data
                                 st.session_state.emergencies_data = fetch_baserow_data(BASEROW_CONFIG['EMERGENCIES_TABLE'])
