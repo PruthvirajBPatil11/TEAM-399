@@ -334,7 +334,7 @@ elif page == "🚑 Ambulance Tracking":
     
     if ambulances:
         # Select ambulance
-        ambulance_names = [f"{a.get('Name', f'Ambulance {a.get(\"id\")}')} - {a.get('status', 'Unknown')}" 
+        ambulance_names = [f"{a.get('Name', 'Ambulance ' + str(a.get('id', '')))} - {a.get('status', 'Unknown')}" 
                           for a in ambulances]
         selected = st.selectbox("Select Ambulance", ambulance_names)
         selected_idx = ambulance_names.index(selected)
