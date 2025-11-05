@@ -598,48 +598,159 @@ elif page == "🚨 Emergency Request":
 elif page == "🚑 Ambulance Tracking":
     st.markdown('<div class="sub-header">🚑 Real-Time Ambulance Tracking</div>', unsafe_allow_html=True)
     
-    ambulances = st.session_state.ambulances_data
+    # Get fresh data
+    ambulances = fetch_baserow_data(BASEROW_CONFIG['AMBULANCES_TABLE'])
+    emergencies = fetch_baserow_data(BASEROW_CONFIG['EMERGENCIES_TABLE'])
     
-    if ambulances:
-        # Select ambulance
-        ambulance_names = [f"{a.get('Name', 'Ambulance ' + str(a.get('id', '')))} - {a.get('status', 'Unknown')}" 
-                          for a in ambulances]
-        selected = st.selectbox("Select Ambulance", ambulance_names)
-        selected_idx = ambulance_names.index(selected)
-        ambulance = ambulances[selected_idx]
+    # Filter active emergencies (Pending or In Progress)
+    active_emergencies = [e for e in emergencies if e.get('status') in ['Pending', 'In Progress']]
+    
+    # Tabs for different views
+    tab1, tab2 = st.tabs(["🚨 Active Emergency Tracking", "🚑 All Ambulances"])
+    
+    with tab1:
+        st.write("### Active Emergency Requests")
         
-        # Display metrics
-        col1, col2, col3, col4 = st.columns(4)
+        if active_emergencies:
+            # Show active emergencies
+            for emergency in active_emergencies:
+                with st.expander(f"🚨 Emergency #{emergency.get('id')} - {emergency.get('emergency_type', 'Unknown')} - {emergency.get('severity', '')} Priority", expanded=True):
+                    col1, col2 = st.columns([2, 1])
+                    
+                    with col1:
+                        st.write(f"**Patient:** {emergency.get('patient_name', 'N/A')}")
+                        st.write(f"**Phone:** {emergency.get('phone', 'N/A')}")
+                        st.write(f"**Location:** {emergency.get('location', 'N/A')}")
+                        st.write(f"**Status:** {emergency.get('status', 'Pending')}")
+                        st.write(f"**Assigned Ambulance:** {emergency.get('assigned_ambulance', 'Not Assigned')}")
+                        st.write(f"**Time:** {emergency.get('timestamp', 'N/A')}")
+                    
+                    with col2:
+                        # Update status buttons
+                        if st.button(f"Mark In Progress #{emergency.get('id')}", key=f"progress_{emergency.get('id')}"):
+                            update_baserow_row(BASEROW_CONFIG['EMERGENCIES_TABLE'], emergency.get('id'), {"status": "In Progress"})
+                            st.success("Status updated!")
+                            st.rerun()
+                        
+                        if st.button(f"Mark Completed #{emergency.get('id')}", key=f"complete_{emergency.get('id')}"):
+                            update_baserow_row(BASEROW_CONFIG['EMERGENCIES_TABLE'], emergency.get('id'), {"status": "Completed"})
+                            st.success("Emergency completed!")
+                            st.rerun()
+                    
+                    # Get emergency location
+                    emerg_lat = emergency.get('lat of T')
+                    emerg_lon = emergency.get('long of T')
+                    
+                    if emerg_lat and emerg_lon:
+                        # Find assigned ambulance
+                        assigned_amb_name = emergency.get('assigned_ambulance')
+                        assigned_ambulance = None
+                        
+                        for amb in ambulances:
+                            if amb.get('Name') == assigned_amb_name:
+                                assigned_ambulance = amb
+                                break
+                        
+                        # Create tracking map
+                        st.write("#### 🗺️ Live Tracking Map")
+                        m = folium.Map(
+                            location=[float(emerg_lat), float(emerg_lon)], 
+                            zoom_start=13, 
+                            tiles='OpenStreetMap'
+                        )
+                        
+                        # Add emergency location
+                        folium.Marker(
+                            location=[float(emerg_lat), float(emerg_lon)],
+                            popup=f"<b>Emergency Location</b><br>{emergency.get('patient_name')}<br>{emergency.get('location')}",
+                            icon=folium.Icon(color='red', icon='exclamation', prefix='fa'),
+                            tooltip="Emergency Location"
+                        ).add_to(m)
+                        
+                        # Add ambulance location and route if assigned
+                        if assigned_ambulance:
+                            amb_lat = float(assigned_ambulance.get('lat', assigned_ambulance.get('latitude')))
+                            amb_lon = float(assigned_ambulance.get('lon', assigned_ambulance.get('longitude', assigned_ambulance.get('long'))))
+                            
+                            # Add ambulance marker
+                            folium.Marker(
+                                location=[amb_lat, amb_lon],
+                                popup=f"<b>{assigned_ambulance.get('Name')}</b><br>Status: {assigned_ambulance.get('status')}",
+                                icon=folium.Icon(color='blue', icon='plus', prefix='fa'),
+                                tooltip=f"{assigned_ambulance.get('Name')} - En Route"
+                            ).add_to(m)
+                            
+                            # Get and draw route
+                            route_data = get_route_osrm((amb_lat, amb_lon), (float(emerg_lat), float(emerg_lon)))
+                            if route_data:
+                                route_coords = [[coord[1], coord[0]] for coord in route_data['coordinates']]
+                                
+                                folium.PolyLine(
+                                    locations=route_coords,
+                                    color='blue',
+                                    weight=4,
+                                    opacity=0.7,
+                                    popup=f"Route: {route_data['distance']:.2f} km<br>ETA: {route_data['duration']:.1f} min"
+                                ).add_to(m)
+                                
+                                # Show ETA
+                                st.info(f"🚑 **Ambulance ETA:** {route_data['duration']:.1f} minutes ({route_data['distance']:.2f} km)")
+                        else:
+                            st.warning("⚠️ No ambulance assigned yet")
+                        
+                        # Display map
+                        st_folium(m, width=800, height=400, key=f"map_{emergency.get('id')}")
+                        
+                        # Auto-refresh option
+                        if st.checkbox(f"🔄 Auto-refresh every 10 seconds", key=f"refresh_{emergency.get('id')}"):
+                            time.sleep(10)
+                            st.rerun()
+        else:
+            st.info("✅ No active emergencies at the moment")
+    
+    with tab2:
+        st.write("### All Ambulances Status")
         
-        with col1:
-            st.metric("Status", ambulance.get('status', 'Unknown'))
-        with col2:
-            st.metric("Driver", ambulance.get('driver', 'N/A'))
-        with col3:
-            st.metric("Location", f"{ambulance.get('lat', 'N/A')}, {ambulance.get('lon', 'N/A')}")
-        with col4:
-            st.metric("Last Update", "Just now")
-        
-        # Map with ambulance location
-        lat = ambulance.get('lat', ambulance.get('latitude', 12.9716))
-        lon = ambulance.get('lon', ambulance.get('longitude', 77.5946))
-        
-        if lat and lon:
-            m = folium.Map(location=[float(lat), float(lon)], zoom_start=15, tiles='OpenStreetMap')
-            folium.Marker(
-                location=[float(lat), float(lon)],
-                popup=f"<b>{ambulance.get('Name', 'Ambulance')}</b><br>Status: {ambulance.get('status')}",
-                icon=folium.Icon(color='green', icon='plus', prefix='fa')
-            ).add_to(m)
+        if ambulances:
+            # Select ambulance
+            ambulance_names = [f"{a.get('Name', 'Ambulance ' + str(a.get('id', '')))} - {a.get('status', 'Unknown')}" 
+                              for a in ambulances]
+            selected = st.selectbox("Select Ambulance", ambulance_names)
+            selected_idx = ambulance_names.index(selected)
+            ambulance = ambulances[selected_idx]
             
-            st_folium(m, width=1000, height=400)
-        
-        # Live updates
-        st.write("### 📡 Live Updates")
-        st.info(f"🕐 {datetime.now().strftime('%H:%M:%S')} - Ambulance {ambulance.get('Name')} tracking active")
-        st.info(f"📍 Current location: Lat {lat}, Lon {lon}")
-    else:
-        st.warning("No ambulance data available")
+            # Display metrics
+            col1, col2, col3, col4 = st.columns(4)
+            
+            with col1:
+                st.metric("Status", ambulance.get('status', 'Unknown'))
+            with col2:
+                st.metric("Driver", ambulance.get('driver', 'N/A'))
+            with col3:
+                st.metric("Location", f"{ambulance.get('lat', 'N/A')}, {ambulance.get('lon', 'N/A')}")
+            with col4:
+                st.metric("Last Update", "Just now")
+            
+            # Map with ambulance location
+            lat = ambulance.get('lat', ambulance.get('latitude', 12.9716))
+            lon = ambulance.get('lon', ambulance.get('longitude', 77.5946))
+            
+            if lat and lon:
+                m = folium.Map(location=[float(lat), float(lon)], zoom_start=15, tiles='OpenStreetMap')
+                folium.Marker(
+                    location=[float(lat), float(lon)],
+                    popup=f"<b>{ambulance.get('Name', 'Ambulance')}</b><br>Status: {ambulance.get('status')}",
+                    icon=folium.Icon(color='green', icon='plus', prefix='fa')
+                ).add_to(m)
+                
+                st_folium(m, width=1000, height=400)
+            
+            # Live updates
+            st.write("### 📡 Live Updates")
+            st.info(f"🕐 {datetime.now().strftime('%H:%M:%S')} - Ambulance {ambulance.get('Name')} tracking active")
+            st.info(f"📍 Current location: Lat {lat}, Lon {lon}")
+        else:
+            st.warning("No ambulance data available")
 
 # Hospital Finder Page
 elif page == "🏥 Hospital Finder":
