@@ -124,6 +124,133 @@ def reverse_geocode(lat, lon):
     except Exception as e:
         return f"{lat:.6f}, {lon:.6f}"
 
+def fetch_nearby_landmarks(lat, lon, radius_km=5, landmark_type='hospital'):
+    """
+    Fetch nearby landmarks using Overpass API (OpenStreetMap)
+    
+    Args:
+        lat: Latitude
+        lon: Longitude
+        radius_km: Search radius in kilometers
+        landmark_type: Type of landmark ('hospital', 'clinic', 'pharmacy', 'fire_station', 'police')
+    
+    Returns:
+        List of landmarks with name, lat, lon, distance
+    """
+    try:
+        radius_m = radius_km * 1000  # Convert to meters
+        
+        # Overpass API query based on landmark type
+        if landmark_type == 'hospital':
+            query = f"""
+            [out:json][timeout:25];
+            (
+              node["amenity"="hospital"](around:{radius_m},{lat},{lon});
+              way["amenity"="hospital"](around:{radius_m},{lat},{lon});
+              node["healthcare"="hospital"](around:{radius_m},{lat},{lon});
+              way["healthcare"="hospital"](around:{radius_m},{lat},{lon});
+            );
+            out center;
+            """
+        elif landmark_type == 'clinic':
+            query = f"""
+            [out:json][timeout:25];
+            (
+              node["amenity"="clinic"](around:{radius_m},{lat},{lon});
+              way["amenity"="clinic"](around:{radius_m},{lat},{lon});
+              node["healthcare"="clinic"](around:{radius_m},{lat},{lon});
+              way["healthcare"="clinic"](around:{radius_m},{lat},{lon});
+            );
+            out center;
+            """
+        elif landmark_type == 'pharmacy':
+            query = f"""
+            [out:json][timeout:25];
+            (
+              node["amenity"="pharmacy"](around:{radius_m},{lat},{lon});
+              way["amenity"="pharmacy"](around:{radius_m},{lat},{lon});
+            );
+            out center;
+            """
+        elif landmark_type == 'fire_station':
+            query = f"""
+            [out:json][timeout:25];
+            (
+              node["amenity"="fire_station"](around:{radius_m},{lat},{lon});
+              way["amenity"="fire_station"](around:{radius_m},{lat},{lon});
+            );
+            out center;
+            """
+        elif landmark_type == 'police':
+            query = f"""
+            [out:json][timeout:25];
+            (
+              node["amenity"="police"](around:{radius_m},{lat},{lon});
+              way["amenity"="police"](around:{radius_m},{lat},{lon});
+            );
+            out center;
+            """
+        else:
+            # Default: hospitals
+            query = f"""
+            [out:json][timeout:25];
+            (
+              node["amenity"="hospital"](around:{radius_m},{lat},{lon});
+              way["amenity"="hospital"](around:{radius_m},{lat},{lon});
+            );
+            out center;
+            """
+        
+        # Query Overpass API
+        overpass_url = "https://overpass-api.de/api/interpreter"
+        response = requests.post(overpass_url, data=query, timeout=30)
+        
+        if response.status_code == 200:
+            data = response.json()
+            landmarks = []
+            
+            for element in data.get('elements', []):
+                # Get coordinates
+                if element['type'] == 'node':
+                    landmark_lat = element['lat']
+                    landmark_lon = element['lon']
+                elif element['type'] == 'way' and 'center' in element:
+                    landmark_lat = element['center']['lat']
+                    landmark_lon = element['center']['lon']
+                else:
+                    continue
+                
+                # Get name
+                name = element.get('tags', {}).get('name', 'Unnamed')
+                
+                # Skip if no name
+                if name == 'Unnamed':
+                    continue
+                
+                # Calculate distance
+                distance = calculate_distance((lat, lon), (landmark_lat, landmark_lon))
+                
+                landmarks.append({
+                    'name': name,
+                    'lat': landmark_lat,
+                    'lon': landmark_lon,
+                    'distance': distance,
+                    'type': landmark_type,
+                    'address': element.get('tags', {}).get('addr:full', 
+                               element.get('tags', {}).get('addr:street', 'N/A'))
+                })
+            
+            # Sort by distance
+            landmarks.sort(key=lambda x: x['distance'])
+            return landmarks
+        else:
+            st.warning(f"Failed to fetch landmarks: {response.status_code}")
+            return []
+            
+    except Exception as e:
+        st.error(f"Error fetching landmarks: {str(e)}")
+        return []
+
 def calculate_distance(coord1, coord2):
     """Calculate distance between two coordinates in kilometers"""
     try:
@@ -832,44 +959,176 @@ elif page == "🚑 Ambulance Tracking":
 
 # Hospital Finder Page
 elif page == "🏥 Hospital Finder":
-    st.markdown('<div class="sub-header">🏥 Nearest Hospital Finder</div>', unsafe_allow_html=True)
+    st.markdown('<div class="sub-header">🏥 Nearest Hospital & Landmark Finder</div>', unsafe_allow_html=True)
     
-    st.write("### Find hospitals with available beds")
+    st.write("### Find nearby hospitals and landmarks")
+    st.info("📍 Enter your location or use GPS to find nearby hospitals, clinics, pharmacies, and emergency services")
     
-    # Sample hospitals (you can integrate with Baserow)
-    hospitals = [
-        {"name": "City General Hospital", "lat": 12.9716, "lon": 77.5946, "beds": 45, "distance": 2.3},
-        {"name": "Apollo Hospital", "lat": 12.9822, "lon": 77.6090, "beds": 23, "distance": 3.8},
-        {"name": "Fortis Hospital", "lat": 12.9611, "lon": 77.6387, "beds": 12, "distance": 5.2},
-        {"name": "Manipal Hospital", "lat": 12.9352, "lon": 77.6245, "beds": 8, "distance": 4.1},
-    ]
+    col1, col2 = st.columns([2, 1])
     
-    # Filters
-    col1, col2 = st.columns(2)
     with col1:
-        min_beds = st.slider("Minimum Beds Required", 1, 50, 5)
+        # Location input
+        st.write("#### 📍 Your Location")
+        location_method = st.radio("Choose location method:", 
+                                   ["Enter Address", "Enter Coordinates", "Use GPS"], 
+                                   horizontal=True)
+        
+        user_lat, user_lon = None, None
+        
+        if location_method == "Enter Address":
+            address_input = st.text_input("Enter your address:", 
+                                         placeholder="e.g., MG Road, Bangalore")
+            if st.button("🔍 Find Location", key="find_loc"):
+                if address_input:
+                    with st.spinner("Finding your location..."):
+                        user_lat, user_lon, full_address = geocode_address(address_input)
+                        if user_lat and user_lon:
+                            st.success(f"✅ Found: {full_address}")
+                            st.session_state['finder_lat'] = user_lat
+                            st.session_state['finder_lon'] = user_lon
+                        else:
+                            st.error("❌ Location not found. Try a different address.")
+                else:
+                    st.warning("Please enter an address")
+        
+        elif location_method == "Enter Coordinates":
+            coord_col1, coord_col2 = st.columns(2)
+            with coord_col1:
+                user_lat = st.number_input("Latitude:", value=12.9716, format="%.6f")
+            with coord_col2:
+                user_lon = st.number_input("Longitude:", value=77.5946, format="%.6f")
+            
+            if st.button("📍 Use These Coordinates", key="use_coords"):
+                st.session_state['finder_lat'] = user_lat
+                st.session_state['finder_lon'] = user_lon
+                st.success(f"✅ Using coordinates: {user_lat:.6f}, {user_lon:.6f}")
+        
+        elif location_method == "Use GPS":
+            st.info("🌐 GPS feature requires browser permission. Use 'Enter Address' or 'Enter Coordinates' for now.")
+    
     with col2:
-        max_distance = st.slider("Maximum Distance (km)", 1, 20, 10)
+        # Filters
+        st.write("#### ⚙️ Search Settings")
+        landmark_type = st.selectbox("Landmark Type:", 
+                                    ["hospital", "clinic", "pharmacy", "fire_station", "police"],
+                                    format_func=lambda x: {
+                                        "hospital": "🏥 Hospital",
+                                        "clinic": "🏥 Clinic",
+                                        "pharmacy": "💊 Pharmacy",
+                                        "fire_station": "🚒 Fire Station",
+                                        "police": "👮 Police Station"
+                                    }[x])
+        
+        search_radius = st.slider("Search Radius (km):", 1, 20, 5)
     
-    # Filter hospitals
-    filtered = [h for h in hospitals if h['beds'] >= min_beds and h['distance'] <= max_distance]
-    filtered = sorted(filtered, key=lambda x: x['distance'])
+    # Search button
+    if st.button("🔍 Search Nearby Landmarks", use_container_width=True, type="primary"):
+        if 'finder_lat' in st.session_state and 'finder_lon' in st.session_state:
+            user_lat = st.session_state['finder_lat']
+            user_lon = st.session_state['finder_lon']
+            
+            with st.spinner(f"🔍 Searching for {landmark_type}s within {search_radius} km..."):
+                landmarks = fetch_nearby_landmarks(user_lat, user_lon, search_radius, landmark_type)
+                st.session_state['landmarks'] = landmarks
+                st.session_state['search_center'] = (user_lat, user_lon)
+        else:
+            st.error("⚠️ Please set your location first!")
     
-    # Display hospitals
-    st.write("### 📋 Available Hospitals")
+    # Display results
+    if 'landmarks' in st.session_state and st.session_state['landmarks']:
+        landmarks = st.session_state['landmarks']
+        user_lat, user_lon = st.session_state['search_center']
+        
+        st.write("---")
+        st.write(f"### 📋 Found {len(landmarks)} {landmark_type}(s)")
+        
+        # Create map
+        st.write("### 🗺️ Map View")
+        m = folium.Map(location=[user_lat, user_lon], zoom_start=13, tiles='OpenStreetMap')
+        
+        # Add user location marker
+        folium.Marker(
+            location=[user_lat, user_lon],
+            popup="<b>📍 Your Location</b>",
+            icon=folium.Icon(color='red', icon='user', prefix='fa'),
+            tooltip="Your Location"
+        ).add_to(m)
+        
+        # Add landmark markers with different colors
+        colors = {
+            'hospital': 'blue',
+            'clinic': 'lightblue',
+            'pharmacy': 'green',
+            'fire_station': 'orange',
+            'police': 'darkblue'
+        }
+        
+        icons = {
+            'hospital': 'plus',
+            'clinic': 'plus-square',
+            'pharmacy': 'medkit',
+            'fire_station': 'fire',
+            'police': 'shield'
+        }
+        
+        for idx, landmark in enumerate(landmarks[:20], 1):  # Show top 20 on map
+            folium.Marker(
+                location=[landmark['lat'], landmark['lon']],
+                popup=f"<b>{landmark['name']}</b><br>Distance: {landmark['distance']:.2f} km<br>Address: {landmark['address']}",
+                icon=folium.Icon(color=colors.get(landmark_type, 'blue'), 
+                               icon=icons.get(landmark_type, 'info-sign'), 
+                               prefix='fa'),
+                tooltip=f"{idx}. {landmark['name']} - {landmark['distance']:.2f} km"
+            ).add_to(m)
+            
+            # Draw line from user to landmark
+            if idx <= 5:  # Draw lines only for nearest 5
+                folium.PolyLine(
+                    locations=[[user_lat, user_lon], [landmark['lat'], landmark['lon']]],
+                    color=colors.get(landmark_type, 'blue'),
+                    weight=2,
+                    opacity=0.5,
+                    dash_array='5'
+                ).add_to(m)
+        
+        st_folium(m, width=900, height=500)
+        
+        # List view
+        st.write("### � Detailed List")
+        
+        for idx, landmark in enumerate(landmarks, 1):
+            with st.expander(f"{idx}. **{landmark['name']}** - {landmark['distance']:.2f} km away"):
+                col1, col2, col3 = st.columns(3)
+                
+                with col1:
+                    st.metric("📍 Distance", f"{landmark['distance']:.2f} km")
+                    st.metric("⏱️ ETA (driving)", f"{int(landmark['distance'] * 3)} min")
+                
+                with col2:
+                    st.write(f"**Coordinates:**")
+                    st.write(f"Lat: {landmark['lat']:.6f}")
+                    st.write(f"Lon: {landmark['lon']:.6f}")
+                
+                with col3:
+                    st.write(f"**Address:**")
+                    st.write(landmark['address'])
+                
+                # Action buttons
+                btn_col1, btn_col2 = st.columns(2)
+                with btn_col1:
+                    if st.button("📍 Get Directions", key=f"dir_{idx}"):
+                        directions_url = f"https://www.google.com/maps/dir/?api=1&origin={user_lat},{user_lon}&destination={landmark['lat']},{landmark['lon']}"
+                        st.markdown(f"[🗺️ Open in Google Maps]({directions_url})")
+                
+                with btn_col2:
+                    if st.button("✅ Select This", key=f"sel_{idx}"):
+                        st.success(f"✅ Selected: {landmark['name']}")
+                        st.session_state['selected_landmark'] = landmark
     
-    for hospital in filtered:
-        col1, col2, col3, col4 = st.columns([3, 1, 1, 1])
-        with col1:
-            st.write(f"**{hospital['name']}**")
-        with col2:
-            st.write(f"🛏️ {hospital['beds']} beds")
-        with col3:
-            st.write(f"📍 {hospital['distance']} km")
-        with col4:
-            if st.button("Select", key=f"select_{hospital['name']}"):
-                st.success(f"✅ Hospital selected: {hospital['name']}")
-        st.divider()
+    elif 'landmarks' in st.session_state and not st.session_state['landmarks']:
+        st.warning(f"⚠️ No {landmark_type}s found within {search_radius} km. Try increasing the search radius.")
+    else:
+        st.info("👆 Set your location and click 'Search Nearby Landmarks' to begin")
 
 # Live Data Feed Page
 elif page == "📡 Live Data Feed":
