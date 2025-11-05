@@ -7,7 +7,6 @@ from datetime import datetime
 import time
 from geopy.geocoders import Nominatim
 from geopy.distance import geodesic
-import polyline
 
 # Page configuration
 st.set_page_config(
