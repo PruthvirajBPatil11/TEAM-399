@@ -80,10 +80,33 @@ st.markdown("""
 def geocode_address(address):
     """Convert address to latitude and longitude using Nominatim (OpenStreetMap)"""
     try:
-        geolocator = Nominatim(user_agent="ambulance_system_team399")
-        location = geolocator.geocode(address)
+        geolocator = Nominatim(
+            user_agent="ambulance_system_team399",
+            timeout=10
+        )
+        
+        # Try with more detailed search parameters
+        location = geolocator.geocode(
+            address,
+            exactly_one=True,
+            addressdetails=True,
+            language='en'
+        )
+        
         if location:
             return location.latitude, location.longitude, location.address
+        
+        # If first attempt fails, try with "India" appended
+        if "india" not in address.lower():
+            location = geolocator.geocode(
+                f"{address}, India",
+                exactly_one=True,
+                addressdetails=True,
+                language='en'
+            )
+            if location:
+                return location.latitude, location.longitude, location.address
+        
         return None, None, None
     except Exception as e:
         st.error(f"Geocoding error: {str(e)}")
@@ -316,7 +339,9 @@ elif page == "🚨 Emergency Request":
             st.write("### Location")
             location_address = st.text_input("Enter Address or Location *", 
                                             placeholder="e.g., MG Road, Bangalore or Kormangala, Bangalore",
-                                            help="Enter a street address, landmark, or area name")
+                                            help="Enter a street address, landmark, or area name. Include city/state for better results.")
+            
+            st.caption("💡 Examples: 'Cubbon Park, Bangalore', 'Indiranagar, Bangalore, Karnataka', 'Vidhana Soudha, Bangalore'")
             
             submitted = st.form_submit_button("🚨 REQUEST EMERGENCY AMBULANCE", use_container_width=True)
             
@@ -440,11 +465,36 @@ elif page == "🚨 Emergency Request":
                             else:
                                 st.error("❌ No available ambulances found. Please call 108 directly.")
                         else:
-                            st.error("❌ Could not find the location. Please enter a more specific address or try: 'MG Road, Bangalore' or 'Indiranagar, Bangalore'")
+                            st.error("❌ Could not find the location. Please try:")
+                            st.info("""
+                            **Tips for better results:**
+                            - Include city name: "MG Road, Bangalore"
+                            - Include state: "Indiranagar, Bangalore, Karnataka"
+                            - Use landmarks: "Cubbon Park, Bangalore"
+                            - Be specific: "Kormangala 5th Block, Bangalore"
+                            - Try major areas or neighborhoods
+                            """)
+                            st.caption(f"🔍 Searched for: '{location_address}'")
                 else:
                     st.error("⚠️ Please fill all required fields (*)")
     
     with col2:
+        st.write("### 🗺️ Test Location")
+        st.caption("Test if your address can be found before submitting")
+        test_address = st.text_input("Test Address", placeholder="e.g., Cubbon Park, Bangalore", key="test_location")
+        if st.button("🔍 Test Location", use_container_width=True):
+            if test_address:
+                with st.spinner("Searching..."):
+                    test_lat, test_lon, test_full = geocode_address(test_address)
+                    if test_lat and test_lon:
+                        st.success(f"✅ Found!")
+                        st.write(f"**Address:** {test_full}")
+                        st.write(f"**Coordinates:** {test_lat:.6f}, {test_lon:.6f}")
+                    else:
+                        st.error("❌ Not found. Try a more specific address.")
+            else:
+                st.warning("Enter an address to test")
+        
         st.write("### 🆘 Emergency Tips")
         st.info("""
         **While waiting:**
@@ -460,8 +510,8 @@ elif page == "🚨 Emergency Request":
         if st.button("📞 Call 108", use_container_width=True):
             st.write("📞 Calling emergency services...")
         
-        if st.button("� SMS Location", use_container_width=True):
-            st.write("� Sending location via SMS...")
+        if st.button("📧 SMS Location", use_container_width=True):
+            st.write("📧 Sending location via SMS...")
 
 # Ambulance Tracking Page
 elif page == "🚑 Ambulance Tracking":
