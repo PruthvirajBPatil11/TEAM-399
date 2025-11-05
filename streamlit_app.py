@@ -7,6 +7,7 @@ from datetime import datetime
 import time
 from geopy.geocoders import Nominatim
 from geopy.distance import geodesic
+import streamlit.components.v1 as components
 
 # Page configuration
 st.set_page_config(
@@ -111,6 +112,17 @@ def geocode_address(address):
     except Exception as e:
         st.error(f"Geocoding error: {str(e)}")
         return None, None, None
+
+def reverse_geocode(lat, lon):
+    """Convert coordinates to address"""
+    try:
+        geolocator = Nominatim(user_agent="ambulance_system_team399", timeout=10)
+        location = geolocator.reverse(f"{lat}, {lon}", exactly_one=True, language='en')
+        if location:
+            return location.address
+        return f"{lat:.6f}, {lon:.6f}"
+    except Exception as e:
+        return f"{lat:.6f}, {lon:.6f}"
 
 def calculate_distance(coord1, coord2):
     """Calculate distance between two coordinates in kilometers"""
@@ -319,9 +331,68 @@ if page == "📊 Dashboard":
 elif page == "🚨 Emergency Request":
     st.markdown('<div class="sub-header">🚨 Emergency Request</div>', unsafe_allow_html=True)
     
+    # Initialize session state for GPS location
+    if 'user_lat' not in st.session_state:
+        st.session_state.user_lat = None
+    if 'user_lon' not in st.session_state:
+        st.session_state.user_lon = None
+    if 'user_address' not in st.session_state:
+        st.session_state.user_address = None
+    
     col1, col2 = st.columns([2, 1])
     
     with col1:
+        # Auto-fetch GPS Location
+        st.write("### 📍 Auto-Detecting Your Location...")
+        
+        # JavaScript component to automatically get user's location
+        location_component = components.html("""
+            <script>
+            function getLocation() {
+                if (navigator.geolocation) {
+                    navigator.geolocation.getCurrentPosition(
+                        function(position) {
+                            // Send location to Streamlit via query params
+                            const lat = position.coords.latitude;
+                            const lon = position.coords.longitude;
+                            
+                            // Update the page with coordinates
+                            window.parent.postMessage({
+                                type: "streamlit:setComponentValue",
+                                value: { lat: lat, lon: lon }
+                            }, "*");
+                            
+                            document.getElementById('status').innerHTML = 
+                                '<p style="color: green; font-weight: bold;">✅ Location Detected!</p>' +
+                                '<p>Latitude: ' + lat.toFixed(6) + '</p>' +
+                                '<p>Longitude: ' + lon.toFixed(6) + '</p>';
+                        },
+                        function(error) {
+                            let msg = '';
+                            if (error.code === 1) msg = '❌ Please allow location access';
+                            else if (error.code === 2) msg = '❌ Location unavailable';
+                            else msg = '❌ Timeout - try refreshing';
+                            document.getElementById('status').innerHTML = 
+                                '<p style="color: red;">' + msg + '</p>' +
+                                '<p>You can manually enter your address below.</p>';
+                        },
+                        { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+                    );
+                } else {
+                    document.getElementById('status').innerHTML = 
+                        '<p style="color: red;">❌ Geolocation not supported by your browser</p>';
+                }
+            }
+            
+            // Auto-trigger on load
+            window.onload = getLocation;
+            </script>
+            <div id="status" style="padding: 15px; background: #f0f8ff; border-radius: 8px; margin: 10px 0;">
+                <p>🔄 Fetching your GPS location...</p>
+            </div>
+        """, height=150)
+        
+        st.write("---")
         st.write("### Patient Information")
         
         with st.form("emergency_form"):
@@ -335,146 +406,156 @@ elif page == "🚨 Emergency Request":
             
             phone = st.text_input("Contact Number *", placeholder="+91 XXXXX XXXXX")
             
-            # Location input - Address instead of lat/lon
+            # Location - will use auto-detected GPS or manual address
             st.write("### Location")
-            location_address = st.text_input("Enter Address or Location *", 
-                                            placeholder="e.g., MG Road, Bangalore or Kormangala, Bangalore",
-                                            help="Enter a street address, landmark, or area name. Include city/state for better results.")
+            st.info("🌐 Using your auto-detected GPS location (if allowed). Or enter address manually below:")
             
-            st.caption("💡 Examples: 'Cubbon Park, Bangalore', 'Indiranagar, Bangalore, Karnataka', 'Vidhana Soudha, Bangalore'")
+            location_address = st.text_input("Or Enter Address Manually (Optional)", 
+                                            placeholder="e.g., MG Road, Bangalore",
+                                            help="Leave blank to use auto-detected GPS location")
+            
+            st.caption("💡 If GPS detection failed, enter address like: 'Cubbon Park, Bangalore'")
             
             submitted = st.form_submit_button("🚨 REQUEST EMERGENCY AMBULANCE", use_container_width=True)
             
             if submitted:
-                if patient_name and phone and location_address:
-                    with st.spinner("🔍 Finding your location and nearest ambulances..."):
-                        # Geocode the address
-                        lat, lon, full_address = geocode_address(location_address)
+                if patient_name and phone:
+                    # Try to get location from component value
+                    if location_component and isinstance(location_component, dict):
+                        if 'lat' in location_component and 'lon' in location_component:
+                            st.session_state.user_lat = location_component['lat']
+                            st.session_state.user_lon = location_component['lon']
+                    
+                    # Determine location source
+                    lat, lon, full_address = None, None, None
+                    
+                    if location_address:
+                        # User provided manual address
+                        with st.spinner("🔍 Finding your location and nearest ambulances..."):
+                            lat, lon, full_address = geocode_address(location_address)
+                    elif st.session_state.user_lat and st.session_state.user_lon:
+                        # Use auto-detected GPS
+                        lat = st.session_state.user_lat
+                        lon = st.session_state.user_lon
+                        with st.spinner("🔍 Getting address from GPS..."):
+                            full_address = reverse_geocode(lat, lon)
+                        st.success(f"✅ Using auto-detected GPS location")
+                    else:
+                        st.error("❌ No location detected. Please allow GPS access or enter address manually.")
+                    
+                    if lat and lon:
+                        st.success(f"✅ Location: {full_address}")
+                        st.info(f"📍 Coordinates: {lat:.6f}, {lon:.6f}")
                         
-                        if lat and lon:
-                            st.success(f"✅ Location found: {full_address}")
-                            st.info(f"📍 Coordinates: {lat:.6f}, {lon:.6f}")
-                            
-                            # Get ambulances from Baserow
-                            ambulances = st.session_state.ambulances_data
-                            if not ambulances:
-                                ambulances = fetch_baserow_data(BASEROW_CONFIG['AMBULANCES_TABLE'])
-                            
-                            # Find nearest available ambulances
-                            available_ambulances = []
-                            for amb in ambulances:
-                                if amb.get('status', '').lower() == 'available':
-                                    amb_lat = amb.get('lat', amb.get('latitude'))
-                                    amb_lon = amb.get('lon', amb.get('longitude', amb.get('long')))
-                                    
-                                    if amb_lat and amb_lon:
-                                        distance = calculate_distance((float(amb_lat), float(amb_lon)), (lat, lon))
-                                        amb['distance_to_emergency'] = distance
-                                        available_ambulances.append(amb)
-                            
-                            # Sort by distance
-                            available_ambulances.sort(key=lambda x: x.get('distance_to_emergency', float('inf')))
-                            
-                            if available_ambulances:
-                                # Get top 2 nearest ambulances
-                                nearest_ambulances = available_ambulances[:2]
+                        # Get ambulances from Baserow
+                        ambulances = st.session_state.ambulances_data
+                        if not ambulances:
+                            ambulances = fetch_baserow_data(BASEROW_CONFIG['AMBULANCES_TABLE'])
+                        
+                        # Find nearest available ambulances
+                        available_ambulances = []
+                        for amb in ambulances:
+                            if amb.get('status', '').lower() == 'available':
+                                amb_lat = amb.get('lat', amb.get('latitude'))
+                                amb_lon = amb.get('lon', amb.get('longitude', amb.get('long')))
                                 
-                                st.success(f"✅ Found {len(nearest_ambulances)} nearest ambulance(s)!")
+                                if amb_lat and amb_lon:
+                                    distance = calculate_distance((float(amb_lat), float(amb_lon)), (lat, lon))
+                                    amb['distance_to_emergency'] = distance
+                                    available_ambulances.append(amb)
+                        
+                        # Sort by distance
+                        available_ambulances.sort(key=lambda x: x.get('distance_to_emergency', float('inf')))
+                        
+                        if available_ambulances:
+                            # Get top 2 nearest ambulances
+                            nearest_ambulances = available_ambulances[:2]
+                            
+                            st.success(f"✅ Found {len(nearest_ambulances)} nearest ambulance(s)!")
+                            
+                            # Display ambulance details
+                            for idx, amb in enumerate(nearest_ambulances, 1):
+                                amb_name = amb.get('Name', f'Ambulance {amb.get("id")}')
+                                distance = amb.get('distance_to_emergency', 0)
+                                eta = int(distance * 3)  # Rough estimate: 3 min per km
                                 
-                                # Display ambulance details
-                                for idx, amb in enumerate(nearest_ambulances, 1):
-                                    amb_name = amb.get('Name', f'Ambulance {amb.get("id")}')
-                                    distance = amb.get('distance_to_emergency', 0)
-                                    eta = int(distance * 3)  # Rough estimate: 3 min per km
-                                    
-                                    st.info(f"""
-                                    **Ambulance {idx}: {amb_name}**
-                                    - 📍 Distance: {distance:.2f} km
-                                    - ⏱️ ETA: {eta} minutes
-                                    - 🚑 Status: Available
-                                    """)
+                                st.info(f"""
+                                **Ambulance {idx}: {amb_name}**
+                                - 📍 Distance: {distance:.2f} km
+                                - ⏱️ ETA: {eta} minutes
+                                - 🚑 Status: Available
+                                """)
+                            
+                            # Create map with routes
+                            st.write("### 🗺️ Route Map")
+                            m = folium.Map(location=[lat, lon], zoom_start=13, tiles='OpenStreetMap')
+                            
+                            # Add emergency location marker
+                            folium.Marker(
+                                location=[lat, lon],
+                                popup=f"<b>Emergency Location</b><br>{full_address}",
+                                icon=folium.Icon(color='red', icon='exclamation', prefix='fa'),
+                                tooltip="Emergency Location"
+                            ).add_to(m)
+                            
+                            # Add ambulances and routes
+                            colors = ['blue', 'green', 'purple', 'orange']
+                            for idx, amb in enumerate(nearest_ambulances):
+                                amb_lat = float(amb.get('lat', amb.get('latitude')))
+                                amb_lon = float(amb.get('lon', amb.get('longitude', amb.get('long'))))
+                                amb_name = amb.get('Name', f'Ambulance {amb.get("id")}')
                                 
-                                # Create map with routes
-                                st.write("### �️ Route Map")
-                                m = folium.Map(location=[lat, lon], zoom_start=13, tiles='OpenStreetMap')
-                                
-                                # Add emergency location marker
+                                # Add ambulance marker
                                 folium.Marker(
-                                    location=[lat, lon],
-                                    popup=f"<b>Emergency Location</b><br>{full_address}",
-                                    icon=folium.Icon(color='red', icon='exclamation', prefix='fa'),
-                                    tooltip="Emergency Location"
+                                    location=[amb_lat, amb_lon],
+                                    popup=f"<b>{amb_name}</b><br>Distance: {amb['distance_to_emergency']:.2f} km",
+                                    icon=folium.Icon(color=colors[idx % len(colors)], icon='plus', prefix='fa'),
+                                    tooltip=f"{amb_name} - {amb['distance_to_emergency']:.2f} km"
                                 ).add_to(m)
                                 
-                                # Add ambulances and routes
-                                colors = ['blue', 'green', 'purple', 'orange']
-                                for idx, amb in enumerate(nearest_ambulances):
-                                    amb_lat = float(amb.get('lat', amb.get('latitude')))
-                                    amb_lon = float(amb.get('lon', amb.get('longitude', amb.get('long'))))
-                                    amb_name = amb.get('Name', f'Ambulance {amb.get("id")}')
+                                # Get and draw route
+                                route_data = get_route_osrm((amb_lat, amb_lon), (lat, lon))
+                                if route_data:
+                                    # Convert coordinates from [lon, lat] to [lat, lon] for folium
+                                    route_coords = [[coord[1], coord[0]] for coord in route_data['coordinates']]
                                     
-                                    # Add ambulance marker
-                                    folium.Marker(
-                                        location=[amb_lat, amb_lon],
-                                        popup=f"<b>{amb_name}</b><br>Distance: {amb['distance_to_emergency']:.2f} km",
-                                        icon=folium.Icon(color=colors[idx % len(colors)], icon='plus', prefix='fa'),
-                                        tooltip=f"{amb_name} - {amb['distance_to_emergency']:.2f} km"
+                                    folium.PolyLine(
+                                        locations=route_coords,
+                                        color=colors[idx % len(colors)],
+                                        weight=4,
+                                        opacity=0.7,
+                                        popup=f"{amb_name}<br>Distance: {route_data['distance']:.2f} km<br>Duration: {route_data['duration']:.1f} min"
                                     ).add_to(m)
-                                    
-                                    # Get and draw route
-                                    route_data = get_route_osrm((amb_lat, amb_lon), (lat, lon))
-                                    if route_data:
-                                        # Convert coordinates from [lon, lat] to [lat, lon] for folium
-                                        route_coords = [[coord[1], coord[0]] for coord in route_data['coordinates']]
-                                        
-                                        folium.PolyLine(
-                                            locations=route_coords,
-                                            color=colors[idx % len(colors)],
-                                            weight=4,
-                                            opacity=0.7,
-                                            popup=f"{amb_name}<br>Distance: {route_data['distance']:.2f} km<br>Duration: {route_data['duration']:.1f} min"
-                                        ).add_to(m)
+                            
+                            # Display map
+                            st_folium(m, width=700, height=400)
+                            
+                            # Create emergency request in Baserow
+                            emergency_data = {
+                                "patient_name": patient_name,
+                                "age": patient_age,
+                                "emergency_type": emergency_type,
+                                "severity": severity,
+                                "phone": phone,
+                                "location": full_address,
+                                "lat of T": lat,
+                                "long of T": lon,
+                                "timestamp": datetime.now().isoformat(),
+                                "status": "Pending",
+                                "assigned_ambulance": nearest_ambulances[0].get('Name', '')
+                            }
+                            
+                            result = create_baserow_row(BASEROW_CONFIG['EMERGENCIES_TABLE'], emergency_data)
+                            
+                            if result:
+                                st.success(f"✅ Emergency request #{result.get('id')} created successfully!")
+                                st.success(f"🚑 Dispatching: {nearest_ambulances[0].get('Name', 'Ambulance')}")
+                                st.info("📞 Emergency hotline: 108")
                                 
-                                # Display map
-                                st_folium(m, width=700, height=400)
-                                
-                                # Create emergency request in Baserow
-                                emergency_data = {
-                                    "patient_name": patient_name,
-                                    "age": patient_age,
-                                    "emergency_type": emergency_type,
-                                    "severity": severity,
-                                    "phone": phone,
-                                    "location": full_address,
-                                    "lat of T": lat,
-                                    "long of T": lon,
-                                    "timestamp": datetime.now().isoformat(),
-                                    "status": "Pending",
-                                    "assigned_ambulance": nearest_ambulances[0].get('Name', '')
-                                }
-                                
-                                result = create_baserow_row(BASEROW_CONFIG['EMERGENCIES_TABLE'], emergency_data)
-                                
-                                if result:
-                                    st.success(f"✅ Emergency request #{result.get('id')} created successfully!")
-                                    st.success(f"� Dispatching: {nearest_ambulances[0].get('Name', 'Ambulance')}")
-                                    st.info("📞 Emergency hotline: 108")
-                                    
-                                    # Refresh data
-                                    st.session_state.emergencies_data = fetch_baserow_data(BASEROW_CONFIG['EMERGENCIES_TABLE'])
-                            else:
-                                st.error("❌ No available ambulances found. Please call 108 directly.")
+                                # Refresh data
+                                st.session_state.emergencies_data = fetch_baserow_data(BASEROW_CONFIG['EMERGENCIES_TABLE'])
                         else:
-                            st.error("❌ Could not find the location. Please try:")
-                            st.info("""
-                            **Tips for better results:**
-                            - Include city name: "MG Road, Bangalore"
-                            - Include state: "Indiranagar, Bangalore, Karnataka"
-                            - Use landmarks: "Cubbon Park, Bangalore"
-                            - Be specific: "Kormangala 5th Block, Bangalore"
-                            - Try major areas or neighborhoods
-                            """)
-                            st.caption(f"🔍 Searched for: '{location_address}'")
+                            st.error("❌ No available ambulances found. Please call 108 directly.")
                 else:
                     st.error("⚠️ Please fill all required fields (*)")
     
